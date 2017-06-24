@@ -2,9 +2,11 @@
   "name": "gh-api-files-updater",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bin": {
+    "gh-api-files-uploader": "index.js"
   },
   "repository": {
     "type": "git",
@@ -17,6 +19,7 @@
   },
   "homepage": "https://github.com/co3k/gh-api-files-updater#readme",
   "dependencies": {
-    "github-api": "^3.0.0"
+    "commander": "^2.10.0",
+    "request": "^2.81.0"
   }
 }

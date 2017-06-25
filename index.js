@@ -59,8 +59,29 @@ function call(method, url, params) {
   });
 }
 
-function extractTreeContentsFromRootTree(rootTree, key) {
-  // 指定したキーのツリーの中身のみをツリーから抽出し、 Map から Array に変換して返す。サブディレクトリは除外する
+// 指定したキーのツリーの中身のみをツリーから抽出し、 Map から Array に変換して返す。サブディレクトリは除外する
+function extractTreeContentsFromRootTree(rootTree, treePath) {
+  const tree = new Map(rootTree.tree.map((t) => [t.path, t]));
+  if (!tree.has(treePath)) {
+    return [];
+  }
+
+  return tree.values().filter((obj) => {
+    if (!obj.path.startsWith(treePath)) {
+      return false;
+    }
+
+    const suffix = obj.path.substr(treePath.length);
+    if (!!suffix) {
+      return false;
+    }
+
+    if (suffix.includes('/')) {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 function uploadFile(rootTree, file) {
@@ -88,6 +109,8 @@ function uploadFile(rootTree, file) {
     }
 
     console.log('変更前のツリー', Array.from(leafParentTree.values()));
+
+    extractTreeContentsFromRootTree();
 
     treeNames.reduce((prev, next) => {
       return prev.then((obj) => {

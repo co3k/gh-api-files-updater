@@ -8,12 +8,15 @@ const path = require('path');
 const commander = require('commander');
 const request = require('request');
 
+const GitHubRepository = require('./lib/GitHubRepository');
+
 commander
   .version('1.0.0')
-  .usage('-k <key> -r <repository> -b <branch> <file ...>')
+  .usage('-k <key> -r <repository> -b <branch> -m <message> <file ...>')
   .option('-k, --key <key>', 'GitHub API Key')
   .option('-b, --branch <branch>', 'Branch name')
   .option('-r, --repository <repository>', 'Target GitHub Repository ({user or org}/{repository name})')
+  .option('-m, --message <message>', 'Commit message')
   .parse(process.argv)
 ;
 
@@ -22,7 +25,7 @@ if (commander.args.length <= 0) {
   process.exit(0);
 }
 
-if (!commander.key || !commander.repository || !commander.args) {
+if (!commander.key || !commander.repository || !commander.args || !commander.message) {
   console.error('The key option and the repository option, and the arguments are required.');
   commander.help();
   process.exit(1);
@@ -36,7 +39,7 @@ function call(method, url, params) {
     headers: {
       Authorization: `token ${commander.key}`,
       'Content-Type': 'application/json',
-      'User-Agent': 'co3k/gh-api-fiels-updater',
+      'User-Agent': 'co3k/gh-api-files-updater',
     },
     json: true,
   });
@@ -49,6 +52,8 @@ function call(method, url, params) {
 
   return new Promise((resolve, reject) => {
     request(options, (error, response, body) => {
+//      console.log({ options, body });
+
       if (error) {
         reject(error);
         return;
@@ -59,97 +64,61 @@ function call(method, url, params) {
   });
 }
 
-// 指定したキーのツリーの中身のみをツリーから抽出し、 Map から Array に変換して返す。サブディレクトリは除外する
-function extractTreeContentsFromRootTree(rootTree, treePath) {
-  const tree = new Map(rootTree.tree.map((t) => [t.path, t]));
-  if (!tree.has(treePath)) {
-    return [];
-  }
-
-  return tree.values().filter((obj) => {
-    if (!obj.path.startsWith(treePath)) {
-      return false;
-    }
-
-    const suffix = obj.path.substr(treePath.length);
-    if (!!suffix) {
-      return false;
-    }
-
-    if (suffix.includes('/')) {
-      return false;
-    }
-
-    return true;
-  });
-}
-
-function uploadFile(rootTree, file) {
+function uploadFile(repository, file) {
   const filePath = path.relative(__dirname, file);
-  const tree = new Map(rootTree.tree.map((t) => [t.path, t]));
 
   return call('POST', `/repos/${commander.repository}/git/blobs`, {
     content: fs.readFileSync(file, 'utf-8'),
   }).then((blob) => {
     console.log('ファイル: ', file);
+
     const treeNames = path.dirname(file).split(path.sep)
       .map((value, key, input) => {
-        return input.slice(1, key + 1).join('/');
+        return input.slice(0, key + 1).join('/');
       })
+      .filter((v) => '.' !== v)
       .reverse()
     ;
 
-    const leafParentTreeId = !!treeNames[0] ? tree.get(treeNames[0]).sha : rootTree.sha;
-    const leafParentTree = !!treeNames[0] ? tree.get(treeNames[0]) : rootTree;
-    if (!leafParentTree) {
+    console.log(treeNames);
+    const leafParentTreeId = !!treeNames[0] ? repository.getObject(treeNames[0]).sha : repository.treeObject.sha;
+//    const leafParentTree = !!treeNames[0] ? repository.getObject(treeNames[0]) : rootTree;
+    if (!leafParentTreeId) {
       console.error('TODO: implement to create new trees!!');
       console.error({ leafParentTreeId, treeNames });
       console.error(tree.get(treeNames[0]));
       return;
     }
 
-    console.log('変更前のツリー', Array.from(leafParentTree.values()));
+    const modifiedTree = repository.extractTreeContentsToArray(treeNames[0]);
+    modifiedTree.push({
+      path: path.basename(filePath),
+      mode: '100644',
+      type: 'blob',
+      sha: blob.sha,
+    });
+    const appendFile = call('POST', `/repos/${commander.repository}/git/trees`, {
+      base_tree: leafParentTreeId,
+      tree: modifiedTree,
+    });
 
-    extractTreeContentsFromRootTree();
-
-    treeNames.reduce((prev, next) => {
+    return treeNames.reduce((prev, next) => {
       return prev.then((obj) => {
-        console.log('obj', obj);
-
-        return new Promise((resolve) => {
-          resolve({ ebi: 'zou' });
+        return call('POST', `/repos/${commander.repository}/git/trees`, {
+          base_tree: repository.getObject(next).sha,
+          tree: obj.tree,
         });
-
-//        return call('POST', 
-
       });
-//        if (!currentTreeId) {  // leaf of trees
-//          currentTreeId = prev
-//        }
+    }, appendFile).then((root) => {
+      return call('POST', `/repos/${commander.repository}/git/trees`, {
+        base_tree: repository.treeObject.sha,
+        tree: root.tree,
+      });
+    }).then((rootTree) => {
+      repository.treeObject = rootTree;
 
-//        return call('POST', `/repos/${commander.repository}/git/trees`, {
-//        });
-
-//        console.log({ prev, next });
-        /*
-        const promise = (prev instanceof Promise) ? prev : new Promise();
-
-        return promise.then(() => {
-          return call('POST', `/repos/${commander.repository}/git/trees`, {
-          });
-        });
-        */
-//        return 'うおー';
-      }, call('POST', `/repos/${commander.repository}/git/trees`, {
-        base_tree: leafParentTreeId,
-        tree: Array.from(leafParentTree.tree.set(filePath, {
-          path: filePath,
-          mode: 100644,
-          type: 'blob',
-          sha: blob.sha,
-        }).values()).filter((entry) => !!entry.path.includes('/')),
-      }))
-    ;
+      return rootTree;
+    });
   });
 }
 
@@ -157,28 +126,39 @@ const rootDirectories = new Set(commander.args.map((v) => {
   return path.relative(__dirname, path.dirname(v)).split(path.sep)[0];
 }).filter((v) => !!v));
 
-let rootTree = {};
-call('GET', `/repos/${commander.repository}/git/trees/${encodeURIComponent(commander.branch)}`).then((data) => {
-  rootTree = data;
+let commitId;
+let repository;
+call('GET', `/repos/${commander.repository}/branches/${encodeURIComponent(commander.branch)}`).then((branch) => {
+  commitId = branch.commit.sha;
+
+  return call('GET', `/repos/${commander.repository}/git/trees/${commitId}`);
+}).then((data) => {
+  repository = new GitHubRepository(data);
 
   const promises = [];
-  const tree = new Map(data.tree.map((t) => [t.path, t]));
   rootDirectories.forEach((directory) => {
-    const info = tree.get(directory);
-    if (info) {
-      promises.push(call('GET', `/repos/${commander.repository}/git/trees/${info.sha}?recursive=1`).then((directoryData) => {
-        directoryData.tree.forEach((t) => {
-          rootTree.tree.push(Object.assign({}, t, { path: `${directory}/${t.path}` }));
-        });
-      }));
-    }
+    const object = repository.getObject(directory);
+    promises.push(call('GET', `/repos/${commander.repository}/git/trees/${object.sha}?recursive=1`).then((directoryData) => {
+      repository.fillTreeContents(directory, directoryData);
+    }));
   });
 
   return Promise.all(promises);
 }).then(() => {
-  console.log(rootTree);
-
-  return Promise.all(commander.args.map((file) => uploadFile(rootTree, file)));
+  return commander.args.reduce((prev, next) => {
+    return prev.then(() => uploadFile(repository, next));
+  }, new Promise((resolve) => { resolve(); }));
+}).then(() => {
+  return call('POST', `/repos/${commander.repository}/git/commits`, {
+    message: commander.message,
+    tree: repository.treeObject.sha,
+    parents: [commitId],
+  });
+}).then((commit) => {
+  return call('POST', `/repos/${commander.repository}/git/refs/heads/${commander.branch}`, {
+    force: false,
+    sha: commit.sha,
+  });
 }).catch((e) => {
   console.error(e);
   process.exit(1);

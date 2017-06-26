@@ -61,25 +61,27 @@ function call(method, url, params) {
         return;
       }
 
-      reject(new Error(`This request is failed with status code ${response.statusCode}. message: ${body}`));
+      reject(new Error(`This request is failed with status code ${response.statusCode}. message: ${JSON.stringify(body)}, request: ${JSON.stringify(params)}`));
     });
   });
 }
 
 function uploadFile(repository, file) {
   const filePath = path.relative(__dirname, file);
+  const treeNames = path.dirname(file).split(path.sep)
+    .map((value, key, input) => {
+      return input.slice(0, key + 1).join('/');
+    })
+    .map((v) => v === '.' ? '/' : v)
+    .reverse()
+  ;
+  if (!treeNames.includes('/')) {
+    treeNames.push('/');
+  }
 
   return call('POST', `/repos/${commander.repository}/git/blobs`, {
     content: fs.readFileSync(file, 'utf-8'),
   }).then((blob) => {
-    const treeNames = path.dirname(file).split(path.sep)
-      .map((value, key, input) => {
-        return input.slice(0, key + 1).join('/');
-      })
-      .filter((v) => '.' !== v)
-      .reverse()
-    ;
-
     const modifiedTree = repository.extractTreeContentsToArray(treeNames[0]);
     modifiedTree.push({
       path: path.basename(filePath),
@@ -88,62 +90,44 @@ function uploadFile(repository, file) {
       sha: blob.sha,
     });
 
-    const appendFile = new Promise((resolve) => {
-      const newDirectories = [];
-      treeNames.reverse().forEach((dir) => {
-        const object = repository.getObject(dir);
-        if (!object) {
-          newDirectories.push(dir);
-        }
+    const appendGitObject = (parentPath, object) => {
+      console.log(`${parentPath === '/' ? '' : parentPath + '/'}${object.path}`, object);
+      repository.setObject(`${parentPath === '/' ? '' : parentPath + '/'}${object.path}`, object);
+
+      const parentTreeObject = repository.getObject(parentPath);
+      const modifiedTree = repository.extractTreeContentsToArray(parentPath);
+      modifiedTree.push({
+        path: path.basename(object.path),
+        mode: object.type === 'blob' ? '100644' : '040000',
+        sha: object.sha,
+        type: object.type,
       });
 
-      newDirectories.reduce((prev, next) => {
-        console.log('ぷれぶ', prev);
-        return prev.then((object) => {
-          console.log('オブジェクトとネクスト', object, next);
-
-          console.log('POST', `/repos/${commander.repository}/git/trees`, {
-            base_tree: object.sha,
-            tree: [],
-          });
-
-          return call('POST', `/repos/${commander.repository}/git/trees`, {
-            base_tree: object.sha,
-            tree: [],
-          }).then((object) => {
-            console.log('オブジェクトをセット', object);
-            repository.setObject(next, object);
-
-            return new Promise((resolve) => { resolve(object); });
-          });
-        });
-      }, new Promise((resolve) => { resolve(repository.treeObject); }));
-
-      const leafParentTreeObject = !!treeNames[0] ? repository.getObject(treeNames[0]) : repository.treeObject;
-
-      return call('POST', `/repos/${commander.repository}/git/trees`, {
-        base_tree: leafParentTreeObject.sha,
+      const params = {
         tree: modifiedTree,
+      };
+      if (parentTreeObject) {
+        params.base_tree = parentTreeObject.sha;
+      }
+
+      return call('POST', `/repos/${commander.repository}/git/trees`, params).then((result) => {
+        return {
+          path: path.basename(parentPath),
+          mode: '040000',
+          type: 'tree',
+          sha: result.sha,
+        };
       });
-    });
+    };
 
     return treeNames.reduce((prev, next) => {
-      console.log(next);
-
       return prev.then((obj) => {
-        console.log('prev result', obj);
-
-        return call('POST', `/repos/${commander.repository}/git/trees`, {
-          base_tree: repository.getObject(next).sha,
-          tree: obj.tree,
-        });
+        return appendGitObject(next, obj);
       });
-    }, appendFile).then((root) => {
-      return call('POST', `/repos/${commander.repository}/git/trees`, {
-        base_tree: repository.treeObject.sha,
-        tree: root.tree,
-      });
-    }).then((rootTree) => {
+    }, new Promise((resolve) => resolve(Object.assign({}, blob, {
+      type: 'blob',
+      path: path.basename(filePath),
+    })))).then((rootTree) => {
       repository.treeObject = rootTree;
 
       return rootTree;

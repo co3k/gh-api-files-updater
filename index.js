@@ -23,8 +23,7 @@ commander
 if (commander.args.length <= 0) {
   commander.help();
   process.exit(0);
-}
-
+} 
 if (!commander.key || !commander.repository || !commander.args || !commander.message) {
   console.error('The key option and the repository option, and the arguments are required.');
   commander.help();
@@ -52,14 +51,17 @@ function call(method, url, params) {
 
   return new Promise((resolve, reject) => {
     request(options, (error, response, body) => {
-//      console.log({ options, body });
-
       if (error) {
         reject(error);
         return;
       }
 
-      resolve(body);
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        resolve(body);
+        return;
+      }
+
+      reject(new Error(`This request is failed with status code ${response.statusCode}. message: ${body}`));
     });
   });
 }
@@ -70,8 +72,6 @@ function uploadFile(repository, file) {
   return call('POST', `/repos/${commander.repository}/git/blobs`, {
     content: fs.readFileSync(file, 'utf-8'),
   }).then((blob) => {
-    console.log('ファイル: ', file);
-
     const treeNames = path.dirname(file).split(path.sep)
       .map((value, key, input) => {
         return input.slice(0, key + 1).join('/');
@@ -80,13 +80,10 @@ function uploadFile(repository, file) {
       .reverse()
     ;
 
-    console.log(treeNames);
-    const leafParentTreeId = !!treeNames[0] ? repository.getObject(treeNames[0]).sha : repository.treeObject.sha;
-//    const leafParentTree = !!treeNames[0] ? repository.getObject(treeNames[0]) : rootTree;
-    if (!leafParentTreeId) {
+    const leafParentTreeObject = !!treeNames[0] ? repository.getObject(treeNames[0]) : repository.treeObject;
+    if (!leafParentTreeObject) {
       console.error('TODO: implement to create new trees!!');
-      console.error({ leafParentTreeId, treeNames });
-      console.error(tree.get(treeNames[0]));
+      console.error({ leafParentTreeObject, treeNames });
       return;
     }
 
@@ -98,12 +95,16 @@ function uploadFile(repository, file) {
       sha: blob.sha,
     });
     const appendFile = call('POST', `/repos/${commander.repository}/git/trees`, {
-      base_tree: leafParentTreeId,
+      base_tree: leafParentTreeObject.sha,
       tree: modifiedTree,
     });
 
     return treeNames.reduce((prev, next) => {
+      console.log(next);
+
       return prev.then((obj) => {
+        console.log('prev result', obj);
+
         return call('POST', `/repos/${commander.repository}/git/trees`, {
           base_tree: repository.getObject(next).sha,
           tree: obj.tree,
@@ -138,6 +139,10 @@ call('GET', `/repos/${commander.repository}/branches/${encodeURIComponent(comman
   const promises = [];
   rootDirectories.forEach((directory) => {
     const object = repository.getObject(directory);
+    if (!object) {
+      return;
+    }
+
     promises.push(call('GET', `/repos/${commander.repository}/git/trees/${object.sha}?recursive=1`).then((directoryData) => {
       repository.fillTreeContents(directory, directoryData);
     }));

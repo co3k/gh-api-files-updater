@@ -80,13 +80,6 @@ function uploadFile(repository, file) {
       .reverse()
     ;
 
-    const leafParentTreeObject = !!treeNames[0] ? repository.getObject(treeNames[0]) : repository.treeObject;
-    if (!leafParentTreeObject) {
-      console.error('TODO: implement to create new trees!!');
-      console.error({ leafParentTreeObject, treeNames });
-      return;
-    }
-
     const modifiedTree = repository.extractTreeContentsToArray(treeNames[0]);
     modifiedTree.push({
       path: path.basename(filePath),
@@ -94,9 +87,44 @@ function uploadFile(repository, file) {
       type: 'blob',
       sha: blob.sha,
     });
-    const appendFile = call('POST', `/repos/${commander.repository}/git/trees`, {
-      base_tree: leafParentTreeObject.sha,
-      tree: modifiedTree,
+
+    const appendFile = new Promise((resolve) => {
+      const newDirectories = [];
+      treeNames.reverse().forEach((dir) => {
+        const object = repository.getObject(dir);
+        if (!object) {
+          newDirectories.push(dir);
+        }
+      });
+
+      newDirectories.reduce((prev, next) => {
+        console.log('ぷれぶ', prev);
+        return prev.then((object) => {
+          console.log('オブジェクトとネクスト', object, next);
+
+          console.log('POST', `/repos/${commander.repository}/git/trees`, {
+            base_tree: object.sha,
+            tree: [],
+          });
+
+          return call('POST', `/repos/${commander.repository}/git/trees`, {
+            base_tree: object.sha,
+            tree: [],
+          }).then((object) => {
+            console.log('オブジェクトをセット', object);
+            repository.setObject(next, object);
+
+            return new Promise((resolve) => { resolve(object); });
+          });
+        });
+      }, new Promise((resolve) => { resolve(repository.treeObject); }));
+
+      const leafParentTreeObject = !!treeNames[0] ? repository.getObject(treeNames[0]) : repository.treeObject;
+
+      return call('POST', `/repos/${commander.repository}/git/trees`, {
+        base_tree: leafParentTreeObject.sha,
+        tree: modifiedTree,
+      });
     });
 
     return treeNames.reduce((prev, next) => {

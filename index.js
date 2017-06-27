@@ -91,7 +91,6 @@ function uploadFile(repository, file) {
     });
 
     const appendGitObject = (parentPath, object) => {
-      console.log(`${parentPath === '/' ? '' : parentPath + '/'}${object.path}`, object);
       repository.setObject(`${parentPath === '/' ? '' : parentPath + '/'}${object.path}`, object);
 
       const parentTreeObject = repository.getObject(parentPath);
@@ -172,10 +171,19 @@ call('GET', `/repos/${commander.repository}/branches/${encodeURIComponent(comman
     parents: [commitId],
   });
 }).then((commit) => {
-  return call('POST', `/repos/${commander.repository}/git/refs/heads/${commander.branch}`, {
+  const promises = [];
+  promises.push(call('POST', `/repos/${commander.repository}/git/refs/heads/${commander.branch}`, {
     force: false,
     sha: commit.sha,
-  });
+  }));
+  promises.push(call('GET', `/repos/${commander.repository}/commits/${commit.sha}`).then((obj) => {
+    obj.files.forEach((file) => {
+      const status = {'modified': 'M', 'added': 'A', 'deleted': 'D'}[file.status] || '-';
+      console.log(`${status} ${file.filename}`);
+    });
+  }));
+
+  return Promise.all(promises);
 }).catch((e) => {
   console.error(e);
   process.exit(1);

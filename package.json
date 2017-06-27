@@ -6,7 +6,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "bin": {
-    "gh-api-files-uploader": "index.js"
+    "gh-api-files-updater": "index.js"
   },
   "repository": {
     "type": "git",
